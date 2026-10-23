@@ -212,18 +212,46 @@ function buildCharacter() {
 
 buildCharacter();
 
-// ====================== MULTIPLAYER (BROADCAST CHANNEL + PEERJS) ======================
-const myId = 'player_' + Math.floor(Math.random() * 1000000);
+// ====================== FREE MULTIPLAYER SERVER (PEERJS) ======================
 const remotePlayers = {};
+const connections = {};
 
-// Local multi-tab sync using BroadcastChannel (Instant testing between normal & incognito tabs!)
-const bc = new BroadcastChannel('hubert_game_room');
+// Create free peer connection server session
+const peer = new Peer('hubert_room_' + Math.floor(Math.random() * 1000000));
 
-bc.onmessage = (event) => {
-  const data = event.data;
-  if (data.id === myId) return;
-  updateRemotePlayer(data);
-};
+peer.on('open', (id) => {
+  console.log('Connected to free server. My ID:', id);
+  // Auto-connect to common public room peer
+  connectToPeer('hubert_room_main_lobby');
+});
+
+peer.on('connection', (conn) => {
+  setupConnection(conn);
+});
+
+function connectToPeer(targetId) {
+  if (targetId === peer.id || connections[targetId]) return;
+  const conn = peer.connect(targetId);
+  setupConnection(conn);
+}
+
+function setupConnection(conn) {
+  conn.on('open', () => {
+    connections[conn.peer] = conn;
+  });
+
+  conn.on('data', (data) => {
+    updateRemotePlayer(data);
+  });
+
+  conn.on('close', () => {
+    if (remotePlayers[conn.peer]) {
+      scene.remove(remotePlayers[conn.peer].parts.group);
+      delete remotePlayers[conn.peer];
+    }
+    delete connections[conn.peer];
+  });
+}
 
 function createRemotePlayerMesh() {
   const g = new THREE.Group();
@@ -286,7 +314,7 @@ function updateRemotePlayer(data) {
 
 function sendMovement(isMoving) {
   const packet = {
-    id: myId,
+    id: peer.id,
     x: player.pos.x,
     y: player.pos.y,
     z: player.pos.z,
@@ -294,16 +322,8 @@ function sendMovement(isMoving) {
     moving: isMoving
   };
 
-  // Broadcast to other tabs instantly
-  bc.postMessage(packet);
-
-  // Clean up inactive players
-  const now = Date.now();
-  Object.keys(remotePlayers).forEach(id => {
-    if (now - remotePlayers[id].lastSeen > 4000) {
-      scene.remove(remotePlayers[id].parts.group);
-      delete remotePlayers[id];
-    }
+  Object.values(connections).forEach(conn => {
+    if (conn.open) conn.send(packet);
   });
 }
 
