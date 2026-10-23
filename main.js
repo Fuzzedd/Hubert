@@ -159,12 +159,11 @@ function buildCharacter() {
   const g = new THREE.Group();
   const mat = color => new THREE.MeshStandardMaterial({ color, roughness: 0.35, metalness: 0.05 });
 
-  const headMat = mat(0xffffff);   // White Head
-  const torsoMat = mat(0x111111);  // Black Torso
-  const armsMat = mat(0xffffff);   // White Arms
-  const legsMat = mat(0xffffff);   // Pure White Legs
+  const headMat = mat(0xffffff);
+  const torsoMat = mat(0x111111);
+  const armsMat = mat(0xffffff);
+  const legsMat = mat(0xffffff);
 
-  // Legs
   const legGeo = createRoundedBoxGeometry(0.34, 0.8, 0.34, 0.04, 4);
   legGeo.translate(0, -0.4, 0);
 
@@ -176,13 +175,11 @@ function buildCharacter() {
   legR.position.set(0.17, 0.8, 0);
   g.add(legR);
 
-  // Torso
   const torsoGeo = createRoundedBoxGeometry(0.68, 0.75, 0.38, 0.05, 4);
   const torso = new THREE.Mesh(torsoGeo, torsoMat);
   torso.position.set(0, 1.22, 0);
   g.add(torso);
 
-  // Arms
   const armGeo = createRoundedBoxGeometry(0.28, 0.7, 0.28, 0.04, 4);
   armGeo.translate(0, -0.35, 0);
 
@@ -194,24 +191,16 @@ function buildCharacter() {
   armR.position.set(0.46, 1.5, 0);
   g.add(armR);
 
-  // Head
   const headGeo = createRoundedBoxGeometry(0.46, 0.46, 0.46, 0.08, 4);
   const head = new THREE.Mesh(headGeo, headMat);
   head.position.set(0, 1.82, 0);
   g.add(head);
 
-  // Front Face Decal
   const textureLoader = new THREE.TextureLoader();
-  const faceTexture = textureLoader.load('./face11.png', undefined, undefined, () => {
-    console.warn('Could not load ./face11.png.');
-  });
+  const faceTexture = textureLoader.load('./face11.png', undefined, undefined, () => {});
   faceTexture.colorSpace = THREE.SRGBColorSpace;
 
-  const faceMat = new THREE.MeshBasicMaterial({
-    map: faceTexture,
-    transparent: true,
-    alphaTest: 0.05
-  });
+  const faceMat = new THREE.MeshBasicMaterial({ map: faceTexture, transparent: true, alphaTest: 0.05 });
   const facePlane = new THREE.Mesh(new THREE.PlaneGeometry(0.38, 0.38), faceMat);
   facePlane.position.set(0, 1.82, 0.236);
   g.add(facePlane);
@@ -223,12 +212,18 @@ function buildCharacter() {
 
 buildCharacter();
 
-// ====================== PUBLIC MULTIPLAYER ======================
-const myPlayerId = 'player_' + Math.floor(Math.random() * 1000000);
+// ====================== MULTIPLAYER (BROADCAST CHANNEL + PEERJS) ======================
+const myId = 'player_' + Math.floor(Math.random() * 1000000);
 const remotePlayers = {};
 
-// Free public WebSocket relay endpoint
-const ws = new WebSocket('wss://free.js.wp-api-v2.com/public-room');
+// Local multi-tab sync using BroadcastChannel (Instant testing between normal & incognito tabs!)
+const bc = new BroadcastChannel('hubert_game_room');
+
+bc.onmessage = (event) => {
+  const data = event.data;
+  if (data.id === myId) return;
+  updateRemotePlayer(data);
+};
 
 function createRemotePlayerMesh() {
   const g = new THREE.Group();
@@ -251,7 +246,6 @@ function createRemotePlayerMesh() {
   const armR = new THREE.Mesh(armGeo, whiteMat); armR.position.set(0.46, 1.5, 0);
   const head = new THREE.Mesh(headGeo, whiteMat); head.position.set(0, 1.82, 0);
 
-  // Load face texture for remote players
   const textureLoader = new THREE.TextureLoader();
   const faceTexture = textureLoader.load('./face11.png');
   faceTexture.colorSpace = THREE.SRGBColorSpace;
@@ -265,50 +259,45 @@ function createRemotePlayerMesh() {
   return { group: g, legL, legR, armL, armR };
 }
 
-ws.onmessage = (event) => {
-  try {
-    const data = JSON.parse(event.data);
-    if (data.id === myPlayerId) return;
-
-    if (!remotePlayers[data.id]) {
-      remotePlayers[data.id] = {
-        parts: createRemotePlayerMesh(),
-        lastSeen: Date.now()
-      };
-    }
-
-    const p = remotePlayers[data.id];
-    p.parts.group.position.set(data.x, data.y, data.z);
-    p.parts.group.rotation.y = data.yaw;
-    p.lastSeen = Date.now();
-
-    // Sync remote player animations
-    if (data.moving) {
-      const time = performance.now() * 0.008;
-      p.parts.legL.rotation.x = Math.sin(time) * 0.7;
-      p.parts.legR.rotation.x = -Math.sin(time) * 0.7;
-      p.parts.armL.rotation.x = -Math.sin(time) * 0.7;
-      p.parts.armR.rotation.x = Math.sin(time) * 0.7;
-    } else {
-      p.parts.legL.rotation.x = p.parts.legR.rotation.x = 0;
-      p.parts.armL.rotation.x = p.parts.armR.rotation.x = 0;
-    }
-  } catch (e) {}
-};
-
-function sendMovement(isMoving) {
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({
-      id: myPlayerId,
-      x: player.pos.x,
-      y: player.pos.y,
-      z: player.pos.z,
-      yaw: player.yaw,
-      moving: isMoving
-    }));
+function updateRemotePlayer(data) {
+  if (!remotePlayers[data.id]) {
+    remotePlayers[data.id] = {
+      parts: createRemotePlayerMesh(),
+      lastSeen: Date.now()
+    };
   }
 
-  // Remove players who leave or go inactive
+  const p = remotePlayers[data.id];
+  p.parts.group.position.set(data.x, data.y, data.z);
+  p.parts.group.rotation.y = data.yaw;
+  p.lastSeen = Date.now();
+
+  if (data.moving) {
+    const time = performance.now() * 0.008;
+    p.parts.legL.rotation.x = Math.sin(time) * 0.7;
+    p.parts.legR.rotation.x = -Math.sin(time) * 0.7;
+    p.parts.armL.rotation.x = -Math.sin(time) * 0.7;
+    p.parts.armR.rotation.x = Math.sin(time) * 0.7;
+  } else {
+    p.parts.legL.rotation.x = p.parts.legR.rotation.x = 0;
+    p.parts.armL.rotation.x = p.parts.armR.rotation.x = 0;
+  }
+}
+
+function sendMovement(isMoving) {
+  const packet = {
+    id: myId,
+    x: player.pos.x,
+    y: player.pos.y,
+    z: player.pos.z,
+    yaw: player.yaw,
+    moving: isMoving
+  };
+
+  // Broadcast to other tabs instantly
+  bc.postMessage(packet);
+
+  // Clean up inactive players
   const now = Date.now();
   Object.keys(remotePlayers).forEach(id => {
     if (now - remotePlayers[id].lastSeen > 4000) {
@@ -318,7 +307,7 @@ function sendMovement(isMoving) {
   });
 }
 
-// ---------- Controls & Roblox-Style Camera ----------
+// ---------- Controls & Camera ----------
 const keys = {};
 window.addEventListener('keydown', e => { keys[e.code] = true; if (e.code === 'Space') e.preventDefault(); });
 window.addEventListener('keyup', e => { keys[e.code] = false; });
@@ -326,25 +315,17 @@ window.addEventListener('keyup', e => { keys[e.code] = false; });
 let isRightMouseDown = false;
 let camYaw = 0, camPitch = 0.35, camDist = 7;
 
-window.addEventListener('mousedown', e => {
-  if (e.button === 2) isRightMouseDown = true;
-});
-
-window.addEventListener('mouseup', e => {
-  if (e.button === 2) isRightMouseDown = false;
-});
-
+window.addEventListener('mousedown', e => { if (e.button === 2) isRightMouseDown = true; });
+window.addEventListener('mouseup', e => { if (e.button === 2) isRightMouseDown = false; });
 window.addEventListener('mousemove', e => {
   if (!isRightMouseDown) return;
   camYaw -= e.movementX * 0.0035;
   camPitch += e.movementY * 0.0035;
   camPitch = Math.max(-0.4, Math.min(1.35, camPitch));
 });
-
 window.addEventListener('wheel', e => {
   camDist = Math.max(2.5, Math.min(18, camDist + Math.sign(e.deltaY) * 0.6));
 });
-
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
@@ -433,7 +414,6 @@ function update(dt) {
       fallbackParts.armL.rotation.x = -swing;
       fallbackParts.armR.rotation.x = swing;
     } else {
-      // Dynamic jump pose
       fallbackParts.armL.rotation.x = -Math.PI * 0.6 + Math.sin(time * 15) * 0.15;
       fallbackParts.armR.rotation.x = -Math.PI * 0.6 - Math.sin(time * 15) * 0.15;
       fallbackParts.legL.rotation.x = 0.4;
@@ -441,7 +421,6 @@ function update(dt) {
     }
   }
 
-  // Camera tracking
   const target = new THREE.Vector3(player.pos.x, player.pos.y + player.height * 0.85, player.pos.z);
   camera.position.set(
     target.x + Math.sin(camYaw) * Math.cos(camPitch) * camDist,
@@ -454,7 +433,6 @@ function update(dt) {
   sun.position.set(player.pos.x + 40, 60, player.pos.z + 25);
   sun.target.position.copy(player.pos);
 
-  // Broadcast position to public room
   sendMovement(moving);
 }
 
