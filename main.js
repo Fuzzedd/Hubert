@@ -11,6 +11,9 @@ const GRAVITY      = 25;
 const PLAYER_HALF_WIDTH = 0.4;
 // ======================================================
 
+let playerName = "Player";
+let gameStarted = false;
+
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87ceeb);
 scene.fog = new THREE.Fog(0x87ceeb, 60, 220);
@@ -212,63 +215,118 @@ function buildCharacter() {
 
 buildCharacter();
 
-// ====================== 3D CHAT BUBBLES ======================
+// ====================== NAME TAGS & SPEECH BUBBLES ======================
 const speechBubbles = [];
 
-function createSpeechBubble(text) {
+function createNameTagSprite(name) {
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
-  
-  canvas.width = 512;
-  canvas.height = 128;
+  canvas.width = 256;
+  canvas.height = 64;
 
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
   ctx.beginPath();
-  ctx.roundRect(10, 10, 492, 108, 20);
+  ctx.roundRect(10, 10, 236, 44, 10);
   ctx.fill();
 
-  ctx.strokeStyle = '#ffffff';
-  ctx.lineWidth = 4;
-  ctx.stroke();
-
   ctx.fillStyle = '#ffffff';
-  ctx.font = 'bold 36px Arial';
+  ctx.font = 'bold 24px Arial';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-
-  const truncated = text.length > 25 ? text.substring(0, 25) + '...' : text;
-  ctx.fillText(truncated, 256, 64);
+  ctx.fillText(name, 128, 32);
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   const spriteMat = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
   const sprite = new THREE.Sprite(spriteMat);
-  sprite.scale.set(3.5, 0.875, 1);
+  sprite.scale.set(1.6, 0.4, 1);
+  sprite.position.set(0, MODEL_HEIGHT + 0.3, 0);
+  return sprite;
+}
+
+function updateLocalNameTag() {
+  const existing = playerGroup.children.find(c => c.name === 'nametag');
+  if (existing) playerGroup.remove(existing);
+
+  const tag = createNameTagSprite(playerName);
+  tag.name = 'nametag';
+  playerGroup.add(tag);
+}
+
+function createSpeechBubble(text) {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
   
+  canvas.width = 300;
+  canvas.height = 80;
+
+  // Plain white bubble background
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.roundRect(4, 4, 292, 72, 12);
+  ctx.fill();
+
+  ctx.strokeStyle = '#cccccc';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  // Dark text
+  ctx.fillStyle = '#111111';
+  ctx.font = 'bold 22px Arial';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  const truncated = text.length > 22 ? text.substring(0, 22) + '...' : text;
+  ctx.fillText(truncated, 150, 40);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const spriteMat = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
+  const sprite = new THREE.Sprite(spriteMat);
+  sprite.scale.set(1.5, 0.4, 1);
   return sprite;
 }
 
 function showBubbleForPlayer(parentGroup, text) {
-  const existing = parentGroup.children.find(c => c.isSprite);
+  const existing = parentGroup.children.find(c => c.name === 'speechbubble');
   if (existing) parentGroup.remove(existing);
 
   const bubble = createSpeechBubble(text);
-  bubble.position.set(0, MODEL_HEIGHT + 0.6, 0);
+  bubble.name = 'speechbubble';
+  bubble.position.set(0, MODEL_HEIGHT + 0.8, 0);
   parentGroup.add(bubble);
 
   speechBubbles.push({ sprite: bubble, parent: parentGroup, expires: Date.now() + 5000 });
 }
 
-// ====================== MULTIPLAYER & CHAT LOGIC ======================
+// ====================== CHAT & MULTIPLAYER ======================
 const remotePlayers = {};
 const connections = {};
 const localPeerId = 'player_' + Math.floor(Math.random() * 10000);
-const shortName = 'Player #' + localPeerId.slice(-4);
 
 const chatMessagesDiv = document.getElementById('chat-messages');
 const chatInputBox = document.getElementById('chat-input-box');
+const usernameInput = document.getElementById('username-input');
+const playBtn = document.getElementById('play-btn');
+const menuOverlay = document.getElementById('menu-overlay');
+const chatContainer = document.getElementById('chat-container');
 
 let isChatFocused = false;
+
+// Main Menu Start
+playBtn.addEventListener('click', startGame);
+usernameInput.addEventListener('keydown', e => { if (e.code === 'Enter') startGame(); });
+
+function startGame() {
+  const val = usernameInput.value.trim();
+  playerName = val.length > 0 ? val : "Player #" + Math.floor(Math.random() * 9000 + 1000);
+  menuOverlay.style.display = 'none';
+  chatContainer.style.display = 'flex';
+  gameStarted = true;
+
+  updateLocalNameTag();
+  initNetworking();
+}
 
 chatInputBox.addEventListener('focus', () => { isChatFocused = true; });
 chatInputBox.addEventListener('blur', () => { isChatFocused = false; });
@@ -276,7 +334,7 @@ chatInputBox.addEventListener('blur', () => { isChatFocused = false; });
 function addChatMessageToHUD(sender, text) {
   const msgEl = document.createElement('div');
   msgEl.className = 'chat-msg';
-  msgEl.innerHTML = `<span class="sender">${sender}:</span> ${escapeHTML(text)}`;
+  msgEl.innerHTML = `<span class="sender">${escapeHTML(sender)}:</span> ${escapeHTML(text)}`;
   chatMessagesDiv.appendChild(msgEl);
   chatMessagesDiv.scrollTop = chatMessagesDiv.scrollHeight;
 }
@@ -289,28 +347,24 @@ function escapeHTML(str) {
 function sendChatMessage(text) {
   if (!text.trim()) return;
 
-  addChatMessageToHUD(shortName, text);
+  addChatMessageToHUD(playerName, text);
   showBubbleForPlayer(playerGroup, text);
 
   const chatPacket = {
     type: 'chat',
     id: peer ? peer.id : localPeerId,
-    sender: shortName,
+    sender: playerName,
     text: text
   };
 
-  // Send via PeerJS
   Object.values(connections).forEach(conn => {
     if (conn.open) conn.send(chatPacket);
   });
-
-  // Send via BroadcastChannel (multi-tab testing)
   bc.postMessage(chatPacket);
 
   chatInputBox.value = '';
 }
 
-// Multi-tab sync via BroadcastChannel
 const bc = new BroadcastChannel('hubert_game_room');
 bc.onmessage = (event) => {
   const data = event.data;
@@ -326,19 +380,22 @@ bc.onmessage = (event) => {
   }
 };
 
-// PeerJS setup
-const peer = new Peer('hubert_room_' + Math.floor(Math.random() * 1000000));
+let peer = null;
 
-peer.on('open', (id) => {
-  connectToPeer('hubert_room_main_lobby');
-});
+function initNetworking() {
+  peer = new Peer('hubert_room_' + Math.floor(Math.random() * 1000000));
 
-peer.on('connection', (conn) => {
-  setupConnection(conn);
-});
+  peer.on('open', () => {
+    connectToPeer('hubert_room_main_lobby');
+  });
+
+  peer.on('connection', (conn) => {
+    setupConnection(conn);
+  });
+}
 
 function connectToPeer(targetId) {
-  if (targetId === peer.id || connections[targetId]) return;
+  if (!peer || targetId === peer.id || connections[targetId]) return;
   const conn = peer.connect(targetId);
   setupConnection(conn);
 }
@@ -364,7 +421,7 @@ function setupConnection(conn) {
   });
 }
 
-function createRemotePlayerMesh() {
+function createRemotePlayerMesh(name) {
   const g = new THREE.Group();
   const mat = c => new THREE.MeshStandardMaterial({ color: c, roughness: 0.35, metalness: 0.05 });
 
@@ -393,15 +450,21 @@ function createRemotePlayerMesh() {
   facePlane.position.set(0, 1.82, 0.236);
 
   g.add(legL, legR, torso, armL, armR, head, facePlane);
+
+  // Add Name Tag
+  const nameTag = createNameTagSprite(name || "Player");
+  nameTag.name = 'nametag';
+  g.add(nameTag);
+
   g.traverse(o => { if (o.isMesh) o.castShadow = true; });
   scene.add(g);
-  return { group: g, legL, legR, armL, armR };
+  return { group: g, legL, legR, armL, armR, nameTag };
 }
 
 function updateRemotePlayer(data) {
   if (!remotePlayers[data.id]) {
     remotePlayers[data.id] = {
-      parts: createRemotePlayerMesh(),
+      parts: createRemotePlayerMesh(data.name),
       lastSeen: Date.now()
     };
   }
@@ -424,9 +487,12 @@ function updateRemotePlayer(data) {
 }
 
 function sendMovement(isMoving) {
+  if (!gameStarted) return;
+
   const packet = {
     type: 'move',
     id: peer ? peer.id : localPeerId,
+    name: playerName,
     x: player.pos.x,
     y: player.pos.y,
     z: player.pos.z,
@@ -443,12 +509,19 @@ function sendMovement(isMoving) {
 // ---------- Controls & Camera ----------
 const keys = {};
 window.addEventListener('keydown', e => {
-  if (e.code === 'Enter') {
+  if (!gameStarted) return;
+
+  // Open chat on "/" or "Enter"
+  if (e.code === 'Slash' || e.code === 'Enter') {
     if (document.activeElement === chatInputBox) {
-      sendChatMessage(chatInputBox.value);
-      chatInputBox.blur();
+      if (e.code === 'Enter') {
+        sendChatMessage(chatInputBox.value);
+        chatInputBox.blur();
+      }
     } else {
+      e.preventDefault();
       chatInputBox.focus();
+      chatInputBox.value = '';
     }
     return;
   }
@@ -529,7 +602,7 @@ function update(dt) {
   const right = new THREE.Vector3(Math.cos(camYaw), 0, -Math.sin(camYaw));
   moveDir.set(0, 0, 0);
 
-  if (!isChatFocused) {
+  if (!isChatFocused && gameStarted) {
     if (keys['KeyW'] || keys['ArrowUp'])    moveDir.add(fwd);
     if (keys['KeyS'] || keys['ArrowDown'])  moveDir.sub(fwd);
     if (keys['KeyD'] || keys['ArrowRight']) moveDir.add(right);
@@ -543,7 +616,7 @@ function update(dt) {
   player.vel.x = moveDir.x * speed;
   player.vel.z = moveDir.z * speed;
 
-  if (keys['Space'] && player.onGround && !isChatFocused) {
+  if (keys['Space'] && player.onGround && !isChatFocused && gameStarted) {
     player.vel.y = JUMP_SPEED;
     player.onGround = false;
   }
