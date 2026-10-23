@@ -212,16 +212,124 @@ function buildCharacter() {
 
 buildCharacter();
 
-// ====================== FREE MULTIPLAYER SERVER (PEERJS) ======================
+// ====================== 3D CHAT BUBBLES ======================
+const speechBubbles = [];
+
+function createSpeechBubble(text) {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  
+  canvas.width = 512;
+  canvas.height = 128;
+
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+  ctx.beginPath();
+  ctx.roundRect(10, 10, 492, 108, 20);
+  ctx.fill();
+
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 4;
+  ctx.stroke();
+
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 36px Arial';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  const truncated = text.length > 25 ? text.substring(0, 25) + '...' : text;
+  ctx.fillText(truncated, 256, 64);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const spriteMat = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
+  const sprite = new THREE.Sprite(spriteMat);
+  sprite.scale.set(3.5, 0.875, 1);
+  
+  return sprite;
+}
+
+function showBubbleForPlayer(parentGroup, text) {
+  const existing = parentGroup.children.find(c => c.isSprite);
+  if (existing) parentGroup.remove(existing);
+
+  const bubble = createSpeechBubble(text);
+  bubble.position.set(0, MODEL_HEIGHT + 0.6, 0);
+  parentGroup.add(bubble);
+
+  speechBubbles.push({ sprite: bubble, parent: parentGroup, expires: Date.now() + 5000 });
+}
+
+// ====================== MULTIPLAYER & CHAT LOGIC ======================
 const remotePlayers = {};
 const connections = {};
+const localPeerId = 'player_' + Math.floor(Math.random() * 10000);
+const shortName = 'Player #' + localPeerId.slice(-4);
 
-// Create free peer connection server session
+const chatMessagesDiv = document.getElementById('chat-messages');
+const chatInputBox = document.getElementById('chat-input-box');
+
+let isChatFocused = false;
+
+chatInputBox.addEventListener('focus', () => { isChatFocused = true; });
+chatInputBox.addEventListener('blur', () => { isChatFocused = false; });
+
+function addChatMessageToHUD(sender, text) {
+  const msgEl = document.createElement('div');
+  msgEl.className = 'chat-msg';
+  msgEl.innerHTML = `<span class="sender">${sender}:</span> ${escapeHTML(text)}`;
+  chatMessagesDiv.appendChild(msgEl);
+  chatMessagesDiv.scrollTop = chatMessagesDiv.scrollHeight;
+}
+
+function escapeHTML(str) {
+  return str.replace(/[&<>'"]/g, 
+    tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag] || tag));
+}
+
+function sendChatMessage(text) {
+  if (!text.trim()) return;
+
+  addChatMessageToHUD(shortName, text);
+  showBubbleForPlayer(playerGroup, text);
+
+  const chatPacket = {
+    type: 'chat',
+    id: peer ? peer.id : localPeerId,
+    sender: shortName,
+    text: text
+  };
+
+  // Send via PeerJS
+  Object.values(connections).forEach(conn => {
+    if (conn.open) conn.send(chatPacket);
+  });
+
+  // Send via BroadcastChannel (multi-tab testing)
+  bc.postMessage(chatPacket);
+
+  chatInputBox.value = '';
+}
+
+// Multi-tab sync via BroadcastChannel
+const bc = new BroadcastChannel('hubert_game_room');
+bc.onmessage = (event) => {
+  const data = event.data;
+  if (data.id === (peer ? peer.id : localPeerId)) return;
+
+  if (data.type === 'chat') {
+    addChatMessageToHUD(data.sender, data.text);
+    if (remotePlayers[data.id]) {
+      showBubbleForPlayer(remotePlayers[data.id].parts.group, data.text);
+    }
+  } else {
+    updateRemotePlayer(data);
+  }
+};
+
+// PeerJS setup
 const peer = new Peer('hubert_room_' + Math.floor(Math.random() * 1000000));
 
 peer.on('open', (id) => {
-  console.log('Connected to free server. My ID:', id);
-  // Auto-connect to common public room peer
   connectToPeer('hubert_room_main_lobby');
 });
 
@@ -236,14 +344,17 @@ function connectToPeer(targetId) {
 }
 
 function setupConnection(conn) {
-  conn.on('open', () => {
-    connections[conn.peer] = conn;
-  });
-
+  conn.on('open', () => { connections[conn.peer] = conn; });
   conn.on('data', (data) => {
-    updateRemotePlayer(data);
+    if (data.type === 'chat') {
+      addChatMessageToHUD(data.sender, data.text);
+      if (remotePlayers[data.id]) {
+        showBubbleForPlayer(remotePlayers[data.id].parts.group, data.text);
+      }
+    } else {
+      updateRemotePlayer(data);
+    }
   });
-
   conn.on('close', () => {
     if (remotePlayers[conn.peer]) {
       scene.remove(remotePlayers[conn.peer].parts.group);
@@ -314,7 +425,8 @@ function updateRemotePlayer(data) {
 
 function sendMovement(isMoving) {
   const packet = {
-    id: peer.id,
+    type: 'move',
+    id: peer ? peer.id : localPeerId,
     x: player.pos.x,
     y: player.pos.y,
     z: player.pos.z,
@@ -325,12 +437,36 @@ function sendMovement(isMoving) {
   Object.values(connections).forEach(conn => {
     if (conn.open) conn.send(packet);
   });
+  bc.postMessage(packet);
 }
 
 // ---------- Controls & Camera ----------
 const keys = {};
-window.addEventListener('keydown', e => { keys[e.code] = true; if (e.code === 'Space') e.preventDefault(); });
-window.addEventListener('keyup', e => { keys[e.code] = false; });
+window.addEventListener('keydown', e => {
+  if (e.code === 'Enter') {
+    if (document.activeElement === chatInputBox) {
+      sendChatMessage(chatInputBox.value);
+      chatInputBox.blur();
+    } else {
+      chatInputBox.focus();
+    }
+    return;
+  }
+
+  if (e.code === 'Escape' && document.activeElement === chatInputBox) {
+    chatInputBox.blur();
+    return;
+  }
+
+  if (!isChatFocused) {
+    keys[e.code] = true;
+    if (e.code === 'Space') e.preventDefault();
+  }
+});
+
+window.addEventListener('keyup', e => {
+  if (!isChatFocused) keys[e.code] = false;
+});
 
 let isRightMouseDown = false;
 let camYaw = 0, camPitch = 0.35, camDist = 7;
@@ -385,14 +521,20 @@ const clock = new THREE.Clock();
 const moveDir = new THREE.Vector3();
 
 function update(dt) {
+  if (isChatFocused) {
+    Object.keys(keys).forEach(k => keys[k] = false);
+  }
+
   const fwd = new THREE.Vector3(-Math.sin(camYaw), 0, -Math.cos(camYaw));
   const right = new THREE.Vector3(Math.cos(camYaw), 0, -Math.sin(camYaw));
   moveDir.set(0, 0, 0);
 
-  if (keys['KeyW'] || keys['ArrowUp'])    moveDir.add(fwd);
-  if (keys['KeyS'] || keys['ArrowDown'])  moveDir.sub(fwd);
-  if (keys['KeyD'] || keys['ArrowRight']) moveDir.add(right);
-  if (keys['KeyA'] || keys['ArrowLeft'])  moveDir.sub(right);
+  if (!isChatFocused) {
+    if (keys['KeyW'] || keys['ArrowUp'])    moveDir.add(fwd);
+    if (keys['KeyS'] || keys['ArrowDown'])  moveDir.sub(fwd);
+    if (keys['KeyD'] || keys['ArrowRight']) moveDir.add(right);
+    if (keys['KeyA'] || keys['ArrowLeft'])  moveDir.sub(right);
+  }
 
   const moving = moveDir.lengthSq() > 0;
   if (moving) moveDir.normalize();
@@ -401,7 +543,7 @@ function update(dt) {
   player.vel.x = moveDir.x * speed;
   player.vel.z = moveDir.z * speed;
 
-  if (keys['Space'] && player.onGround) {
+  if (keys['Space'] && player.onGround && !isChatFocused) {
     player.vel.y = JUMP_SPEED;
     player.onGround = false;
   }
@@ -452,6 +594,15 @@ function update(dt) {
 
   sun.position.set(player.pos.x + 40, 60, player.pos.z + 25);
   sun.target.position.copy(player.pos);
+
+  // Expire speech bubbles after 5 seconds
+  const now = Date.now();
+  for (let i = speechBubbles.length - 1; i >= 0; i--) {
+    if (now > speechBubbles[i].expires) {
+      speechBubbles[i].parent.remove(speechBubbles[i].sprite);
+      speechBubbles.splice(i, 1);
+    }
+  }
 
   sendMovement(moving);
 }
